@@ -67,11 +67,6 @@ class ApnsPHP_Push extends ApnsPHP_Abstract
 
 	protected $_nSendRetryTimes = 3; /**< @type integer Send retry times. */
 
-	protected $_aServiceURLs = array(
-		'tls://gateway.push.apple.com:2195', // Production environment
-		'tls://gateway.sandbox.push.apple.com:2195' // Sandbox environment
-	); /**< @type array Service URLs environments. */
-
 	protected $_aHTTPServiceURLs = array(
 		'https://api.push.apple.com:443', // Production environment
 		'https://api.development.push.apple.com:443' // Sandbox environment
@@ -256,18 +251,23 @@ class ApnsPHP_Push extends ApnsPHP_Abstract
 	 */
 	private function _httpSend(ApnsPHP_Message $message, &$sReply)
 	{
-		$aHeaders = array('Content-Type: application/json');
+		$aHeaders = [
+			'Content-Type: application/json',
+			"apns-topic: {$this->_bundleid}",
+			"authorization: bearer {$this->_makeJwt()}"
+		];
 		$sTopic = $message->getTopic();
 		if (!empty($sTopic)) {
 			$aHeaders[] = sprintf('apns-topic: %s', $sTopic);
 		}
-
 		if (!(curl_setopt_array($this->_hSocket, array(
+			CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_2_0,
 			CURLOPT_POST => true,
 			CURLOPT_URL => sprintf('%s/3/device/%s', $this->_aHTTPServiceURLs[$this->_nEnvironment], $message->getRecipient()),
 			CURLOPT_HTTPHEADER => $aHeaders,
-			CURLOPT_POSTFIELDS => $message->getPayload()
+			CURLOPT_POSTFIELDS => $message->getPayload(),
 		)) && ($sReply = curl_exec($this->_hSocket)) !== false)) {
+			$this->_log(curl_error($this->_hSocket));
 			return false;
 		}
 

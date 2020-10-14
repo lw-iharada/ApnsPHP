@@ -51,11 +51,10 @@ abstract class ApnsPHP_Abstract
 	const CONNECT_RETRY_INTERVAL = 1000000; /**< @type integer Default connect retry interval in micro seconds. */
 	const SOCKET_SELECT_TIMEOUT = 1000000; /**< @type integer Default socket select timeout in micro seconds. */
 
-	protected $_aServiceURLs = array(); /**< @type array Container for service URLs environments. */
 	protected $_aHTTPServiceURLs = array(); /**< @type array Container for HTTP/2 service URLs environments. */
 
 	protected $_nEnvironment; /**< @type integer Active environment. */
-	protected $_nProtocol; /**< @type integer Active protocol. */
+	protected $_nProtocol = self::PROTOCOL_HTTP; /**< @type integer Active protocol. */
 
 	protected $_nConnectTimeout; /**< @type integer Connect timeout in seconds. */
 	protected $_nConnectRetryTimes = 3; /**< @type integer Connect retry times. */
@@ -63,6 +62,11 @@ abstract class ApnsPHP_Abstract
 	protected $_sProviderCertificateFile; /**< @type string Provider certificate file with key (Bundled PEM). */
 	protected $_sProviderCertificatePassphrase; /**< @type string Provider certificate passphrase. */
 	protected $_sRootCertificationAuthorityFile; /**< @type string Root certification authority file. */
+
+	protected $_authKey; /**<type string p8. */
+	protected $_keyid; /**<type string  AuthKey_XXXXXXXX */
+	protected $_teamid; /**<type string  Your Team Id */
+	protected $_bundleid; /**<type string  Your Bundle ID */
 
 	protected $_nWriteInterval; /**< @type integer Write interval in micro seconds. */
 	protected $_nConnectRetryInterval; /**< @type integer Connect retry interval in micro seconds. */
@@ -76,13 +80,14 @@ abstract class ApnsPHP_Abstract
 	 * Constructor.
 	 *
 	 * @param  $nEnvironment @type integer Environment.
-	 * @param  $sProviderCertificateFile @type string Provider certificate file
-	 *         with key (Bundled PEM).
-	 * @param  $nProtocol @type integer Protocol.
+	 * @param  $authKeyfile @type string Authengicate Key file path (p8).
+	 * @param  $keyid @type string Authengicate Key ID.
+	 * @param  $teamid @type string teamid
+	 * @param  $teamid @type string Bundle Identifier
 	 * @throws ApnsPHP_Exception if the environment is not
 	 *         sandbox or production or the provider certificate file is not readable.
 	 */
-	public function __construct($nEnvironment, $sProviderCertificateFile, $nProtocol = self::PROTOCOL_BINARY)
+	public function __construct($nEnvironment, $authKeyfile, $keyid, $teamid, $bundleid)
 	{
 		if ($nEnvironment != self::ENVIRONMENT_PRODUCTION && $nEnvironment != self::ENVIRONMENT_SANDBOX) {
 			throw new ApnsPHP_Exception(
@@ -91,19 +96,10 @@ abstract class ApnsPHP_Abstract
 		}
 		$this->_nEnvironment = $nEnvironment;
 
-		if (!is_readable($sProviderCertificateFile)) {
-			throw new ApnsPHP_Exception(
-				"Unable to read certificate file '{$sProviderCertificateFile}'"
-			);
-		}
-		$this->_sProviderCertificateFile = $sProviderCertificateFile;
-
-		if ($nProtocol != self::PROTOCOL_BINARY && $nProtocol != self::PROTOCOL_HTTP) {
-			throw new ApnsPHP_Exception(
-				"Invalid protocol '{$nProtocol}'"
-			);
-		}
-		$this->_nProtocol = $nProtocol;
+		$this->_authKey = openssl_pkey_get_private('file://'.$authKeyfile);
+		$this->_keyid = $keyid;
+		$this->_teamid = $teamid;
+		$this->_bundleid = $bundleid;
 		
 		$this->_nConnectTimeout = ini_get("default_socket_timeout");
 		$this->_nWriteInterval = self::WRITE_INTERVAL;
@@ -387,7 +383,7 @@ abstract class ApnsPHP_Abstract
 	 */
 	protected function _connect()
 	{
-		return $this->_nProtocol === self::PROTOCOL_HTTP ? $this->_httpInit() : $this->_binaryConnect($this->_aServiceURLs[$this->_nEnvironment]);
+		return $this->_httpInit();
 	}
 
 	/**
@@ -414,14 +410,12 @@ abstract class ApnsPHP_Abstract
 
 		if (!curl_setopt_array($this->_hSocket, array(
 			CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_2_0,
-			CURLOPT_SSLCERT => $this->_sProviderCertificateFile,
-			CURLOPT_SSLCERTPASSWD => empty($this->_sProviderCertificatePassphrase) ? null : $this->_sProviderCertificatePassphrase,
 			CURLOPT_RETURNTRANSFER => true,
 			CURLOPT_USERAGENT => 'ApnsPHP',
 			CURLOPT_CONNECTTIMEOUT => 10,
 			CURLOPT_TIMEOUT => 30,
 			CURLOPT_SSL_VERIFYPEER => true,
-			CURLOPT_VERBOSE => false
+			CURLOPT_VERBOSE => false,
 		))) {
 			throw new ApnsPHP_Exception(
 				"Unable to initialize HTTP/2 backend."
@@ -429,47 +423,6 @@ abstract class ApnsPHP_Abstract
 		}
 
 		$this->_log("INFO: Initialized HTTP/2 backend.");
-
-		return true;
-	}
-
-	/**
-	 * Connects to Apple Push Notification service server via binary protocol.
-	 *
-	 * @throws ApnsPHP_Exception if is unable to connect.
-	 * @return @type boolean True if successful connected.
-	 */
-	protected function _binaryConnect($sURL)
-	{
-		$this->_log("INFO: Trying {$sURL}...");
-
-		/**
-		 * @see http://php.net/manual/en/context.ssl.php
-		 */
-		$streamContext = stream_context_create(array('ssl' => array(
-			'verify_peer' => isset($this->_sRootCertificationAuthorityFile),
-			'cafile' => $this->_sRootCertificationAuthorityFile,
-			'local_cert' => $this->_sProviderCertificateFile
-		)));
-
-		if (!empty($this->_sProviderCertificatePassphrase)) {
-			stream_context_set_option($streamContext, 'ssl',
-				'passphrase', $this->_sProviderCertificatePassphrase);
-		}
-
-		$this->_hSocket = @stream_socket_client($sURL, $nError, $sError,
-			$this->_nConnectTimeout, STREAM_CLIENT_CONNECT, $streamContext);
-
-		if (!$this->_hSocket) {
-			throw new ApnsPHP_Exception(
-				"Unable to connect to '{$sURL}': {$sError} ({$nError})"
-			);
-		}
-
-		stream_set_blocking($this->_hSocket, 0);
-		stream_set_write_buffer($this->_hSocket, 0);
-
-		$this->_log("INFO: Connected to {$sURL}.");
 
 		return true;
 	}
@@ -485,5 +438,23 @@ abstract class ApnsPHP_Abstract
 			$this->_logger = new ApnsPHP_Log_Embedded();
 		}
 		$this->_logger->log($sMessage);
+	}
+
+	protected function _makeJwt()
+	{
+		$header = ['alg'=>'ES256','kid'=>$this->_keyid];
+		$claims = ['iss'=>$this->_teamid,'iat'=>time()];
+   
+		$header_encoded = $this->base64($header);
+		$claims_encoded = $this->base64($claims);
+   
+		$signature = '';
+		openssl_sign($header_encoded . '.' . $claims_encoded, $signature, $this->_authKey, 'sha256');
+		return $header_encoded . '.' . $claims_encoded . '.' . base64_encode($signature);
+	}
+
+	private function base64($data) 
+	{
+		return rtrim(strtr(base64_encode(json_encode($data)), '+/', '-_'), '=');
 	}
 }

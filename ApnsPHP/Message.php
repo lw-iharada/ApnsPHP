@@ -255,6 +255,13 @@ class ApnsPHP_Message
 		$this->_aCustomProperties[trim($sName)] = $mValue;
 	}
 
+	public function setCustomProperties($properties)
+	{
+		foreach ($properties as $key => $value) {
+			$this->setCustomProperty($key, $value);
+		}
+	}
+
 	/**
 	 * Get the first custom property name.
 	 *
